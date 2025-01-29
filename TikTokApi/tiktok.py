@@ -37,6 +37,7 @@ class TikTokPlaywrightSession:
     headers: dict = None
     ms_token: str = None
     base_url: str = "https://www.tiktok.com"
+    error_count: int = 0
 
 
 class TikTokApi:
@@ -163,58 +164,63 @@ class TikTokApi:
             ]
             await context.add_cookies(formatted_cookies)
         page = await context.new_page()
-        await stealth_async(page)
+        try:
+            await stealth_async(page)
 
-        # Get the request headers to the url
-        request_headers = None
+            # Get the request headers to the url
+            request_headers = None
 
-        def handle_request(request):
-            nonlocal request_headers
-            request_headers = request.headers
+            def handle_request(request):
+                nonlocal request_headers
+                request_headers = request.headers
 
-        page.once("request", handle_request)
+            page.once("request", handle_request)
 
-        if suppress_resource_load_types is not None:
-            await page.route(
-                "**/*",
-                lambda route, request: route.abort()
-                if request.resource_type in suppress_resource_load_types
-                else route.continue_(),
-            )
-        
-        # Set the navigation timeout
-        page.set_default_navigation_timeout(timeout)
-
-        await page.goto(url)
-        await page.goto(url) # hack: tiktok blocks first request not sure why, likely bot detection
-        
-        # by doing this, we are simulate scroll event using mouse to `avoid` bot detection
-        x, y = random.randint(0, 50), random.randint(0, 50)
-        a, b = random.randint(1, 50), random.randint(100, 200)
-
-        await page.mouse.move(x, y)
-        await page.wait_for_load_state("networkidle")
-        await page.mouse.move(a, b)
-
-        session = TikTokPlaywrightSession(
-            context,
-            page,
-            ms_token=ms_token,
-            proxy=proxy,
-            headers=request_headers,
-            base_url=url,
-        )
-        if ms_token is None:
-            time.sleep(sleep_after)  # TODO: Find a better way to wait for msToken
-            cookies = await self.get_session_cookies(session)
-            ms_token = cookies.get("msToken")
-            session.ms_token = ms_token
-            if ms_token is None:
-                self.logger.info(
-                    f"Failed to get msToken on session index {len(self.sessions)}, you should consider specifying ms_tokens"
+            if suppress_resource_load_types is not None:
+                await page.route(
+                    "**/*",
+                    lambda route, request: route.abort()
+                    if request.resource_type in suppress_resource_load_types
+                    else route.continue_(),
                 )
-        self.sessions.append(session)
-        await self.__set_session_params(session)
+            
+            # Set the navigation timeout
+            page.set_default_navigation_timeout(timeout)
+
+            await page.goto(url)
+            await page.goto(url) # hack: tiktok blocks first request not sure why, likely bot detection
+            
+            # by doing this, we are simulate scroll event using mouse to `avoid` bot detection
+            x, y = random.randint(0, 50), random.randint(0, 50)
+            a, b = random.randint(1, 50), random.randint(100, 200)
+
+            await page.mouse.move(x, y)
+            await page.wait_for_load_state("networkidle")
+            await page.mouse.move(a, b)
+
+            session = TikTokPlaywrightSession(
+                context,
+                page,
+                ms_token=ms_token,
+                proxy=proxy,
+                headers=request_headers,
+                base_url=url,
+            )
+            if ms_token is None:
+                time.sleep(sleep_after)  # TODO: Find a better way to wait for msToken
+                cookies = await self.get_session_cookies(session)
+                ms_token = cookies.get("msToken")
+                session.ms_token = ms_token
+                if ms_token is None:
+                    self.logger.info(
+                        f"Failed to get msToken on session index {len(self.sessions)}, you should consider specifying ms_tokens"
+                    )
+            self.sessions.append(session)
+            await self.__set_session_params(session)
+        except Exception as e:
+            self.logger.error(f"Failed to create session: {e}")
+            await context.close()
+            await page.close()
 
     async def create_sessions(
         self,
@@ -292,7 +298,8 @@ class TikTokApi:
                     timeout=timeout,
                 )
                 for _ in range(num_sessions)
-            )
+            ),
+            return_exceptions=True,
         )
         self.num_sessions = len(self.sessions)
 
