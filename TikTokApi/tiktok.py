@@ -3,6 +3,7 @@ import dataclasses
 import json
 import logging
 import random
+import re
 import time
 from typing import Any
 from urllib.parse import quote, urlencode, urlparse
@@ -142,6 +143,7 @@ class TikTokApi:
         sleep_after: int = 1,
         cookies: dict = None,
         suppress_resource_load_types: list[str] = None,
+        block_url_patterns: list[str] = None,
         timeout: int = 30000,
     ):
         try:
@@ -171,13 +173,42 @@ class TikTokApi:
 
             page.once("request", handle_request)
 
-            if suppress_resource_load_types is not None:
-                await page.route(
-                    "**/*",
-                    lambda route, request: route.abort()
-                    if request.resource_type in suppress_resource_load_types
-                    else route.continue_(),
-                )
+            # Create combined route handler for resource types AND URL patterns
+            should_block_resources = suppress_resource_load_types is not None
+            should_block_urls = block_url_patterns is not None
+
+            if should_block_resources or should_block_urls:
+                # Compile URL patterns for performance
+                compiled_patterns = []
+                if block_url_patterns:
+                    for pattern in block_url_patterns:
+                        try:
+                            compiled_patterns.append(re.compile(pattern, re.IGNORECASE))
+                        except re.error:
+                            self.logger.warning(f"Invalid regex pattern: {pattern}")
+
+                async def combined_route_handler(route):
+                    request = route.request
+                    request_url = request.url
+
+                    # Check URL patterns first (more specific blocking)
+                    if compiled_patterns:
+                        for pattern in compiled_patterns:
+                            if pattern.search(request_url):
+                                self.logger.debug(f"Blocked URL pattern: {request_url[:100]}")
+                                await route.abort()
+                                return
+
+                    # Check resource type blocking
+                    if suppress_resource_load_types and request.resource_type in suppress_resource_load_types:
+                        self.logger.debug(f"Blocked resource type {request.resource_type}: {request_url[:100]}")
+                        await route.abort()
+                        return
+
+                    # Allow the request
+                    await route.continue_()
+
+                await page.route("**/*", combined_route_handler)
 
             # Set the navigation timeout
             page.set_default_navigation_timeout(timeout)
@@ -235,6 +266,7 @@ class TikTokApi:
         override_browser_args: list[dict] = None,
         cookies: list[dict] = None,
         suppress_resource_load_types: list[str] = None,
+        block_url_patterns: list[str] = None,
         browser: str = "chromium",
         executable_path: str = None,
         timeout: int = 30000,
@@ -256,6 +288,7 @@ class TikTokApi:
             override_browser_args (list[dict]): A list of dictionaries containing arguments to pass to the browser.
             cookies (list[dict]): A list of cookies to use for the sessions, you can get these from your cookies after visiting TikTok.
             suppress_resource_load_types (list[str]): Types of resources to suppress playwright from loading, excluding more types will make playwright faster.. Types: document, stylesheet, image, media, font, script, textrack, xhr, fetch, eventsource, websocket, manifest, other.
+            block_url_patterns (list[str]): List of regex patterns to block specific URLs (e.g., video CDN URLs). This is more aggressive than suppress_resource_load_types as it blocks by URL pattern regardless of resource type.
             browser (str): firefox, chromium, or webkit; default is chromium
             executable_path (str): Path to the browser executable
             timeout (int): The timeout in milliseconds for page navigation
@@ -266,6 +299,16 @@ class TikTokApi:
                 from TikTokApi import TikTokApi
                 with TikTokApi() as api:
                     await api.create_sessions(num_sessions=5, ms_tokens=['msToken1', 'msToken2'])
+
+                # Block video downloads to save bandwidth:
+                await api.create_sessions(
+                    num_sessions=5,
+                    block_url_patterns=[
+                        r'.*\\.tiktok\\.com/video/.*',
+                        r'.*\\.mp4.*',
+                        r'.*/tos/.*video.*',
+                    ]
+                )
         """
         self.playwright = await async_playwright().start()
         if browser == "chromium":
@@ -296,6 +339,7 @@ class TikTokApi:
                     sleep_after=sleep_after,
                     cookies=random_choice(cookies),
                     suppress_resource_load_types=suppress_resource_load_types,
+                    block_url_patterns=block_url_patterns,
                     timeout=timeout,
                 )
                 for _ in range(num_sessions)
