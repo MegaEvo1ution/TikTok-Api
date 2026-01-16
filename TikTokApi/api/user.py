@@ -1,11 +1,13 @@
 from __future__ import annotations
-from typing import TYPE_CHECKING, ClassVar, AsyncIterator, Optional
+
+from typing import TYPE_CHECKING, AsyncIterator, ClassVar, Optional
+
 from ..exceptions import InvalidResponseException
 
 if TYPE_CHECKING:
     from ..tiktok import TikTokApi
-    from .video import Video
     from .playlist import Playlist
+    from .video import Video
 
 
 class User:
@@ -59,18 +61,21 @@ class User:
             .. code-block:: python
 
                 user_data = await api.user(username='therock').info()
+                # Or with secUid:
+                user_data = await api.user(sec_uid='MS4wLjABAAAA...').info()
         """
 
         username = getattr(self, "username", None)
-        if not username:
+        sec_uid = getattr(self, "sec_uid", None)
+
+        if not username and not sec_uid:
             raise TypeError(
-                "You must provide the username when creating this class to use this method."
+                "You must provide the username or sec_uid when creating this class."
             )
 
-        sec_uid = getattr(self, "sec_uid", None)
         url_params = {
             "secUid": sec_uid if sec_uid is not None else "",
-            "uniqueId": username,
+            "uniqueId": username if username is not None else "",
             "msToken": kwargs.get("ms_token"),
         }
 
@@ -138,7 +143,6 @@ class User:
 
             cursor = resp.get("cursor")
 
-
     async def videos(self, count=30, cursor=0, **kwargs) -> AsyncIterator[Video]:
         """
         Returns a user's videos.
@@ -193,6 +197,58 @@ class User:
 
             cursor = resp.get("cursor")
 
+    async def videos_page(self, count=30, cursor=0, **kwargs) -> dict:
+        """
+        Returns a page of user's videos with pagination info.
+
+        Unlike videos() which is a generator, this returns a single page
+        with cursor and hasMore for manual pagination control.
+
+        Args:
+            count (int): The amount of videos you want returned (max ~35 per page).
+            cursor (int): The cursor for pagination (0 for first page).
+
+        Returns:
+            dict: {
+                "videos": List[Video],
+                "cursor": str | None,
+                "hasMore": bool
+            }
+
+        Raises:
+            InvalidResponseException: If TikTok returns an invalid response.
+        """
+        sec_uid = getattr(self, "sec_uid", None)
+        if sec_uid is None or sec_uid == "":
+            await self.info(**kwargs)
+
+        params = {
+            "secUid": self.sec_uid,
+            "count": min(count, 35),  # TikTok max is ~35 per request
+            "cursor": cursor,
+        }
+
+        resp = await self.parent.make_request(
+            url="https://www.tiktok.com/api/post/item_list/",
+            params=params,
+            headers=kwargs.get("headers"),
+            session=kwargs.get("session"),
+            session_index=kwargs.get("session_index"),
+        )
+
+        if resp is None:
+            raise InvalidResponseException(
+                resp, "TikTok returned an invalid response."
+            )
+
+        videos = [self.parent.video(data=v) for v in resp.get("itemList", [])]
+
+        return {
+            "videos": videos,
+            "cursor": resp.get("cursor"),
+            "hasMore": resp.get("hasMore", False),
+        }
+
     async def liked(
         self, count: int = 30, cursor: int = 0, **kwargs
     ) -> AsyncIterator[Video]:
@@ -207,7 +263,8 @@ class User:
             async iterator/generator: Yields TikTokApi.video objects.
 
         Raises:
-            InvalidResponseException: If TikTok returns an invalid response, the user's likes are private, or one we don't understand.
+            InvalidResponseException: If TikTok returns an invalid response,
+                the user's likes are private, or one we don't understand.
 
         Example Usage:
             .. code-block:: python
@@ -282,5 +339,7 @@ class User:
     def __str__(self):
         username = getattr(self, "username", None)
         user_id = getattr(self, "user_id", None)
+        sec_uid = getattr(self, "sec_uid", None)
+        return f"TikTokApi.user(username='{username}', user_id='{user_id}', sec_uid='{sec_uid}')"
         sec_uid = getattr(self, "sec_uid", None)
         return f"TikTokApi.user(username='{username}', user_id='{user_id}', sec_uid='{sec_uid}')"
