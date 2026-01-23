@@ -20,7 +20,7 @@ from .api.user import User
 from .api.video import Video
 from .exceptions import EmptyResponseException, InvalidJSONException
 from .helpers import random_choice
-from .stealth import stealth_async
+from .stealth import stealth_async, StealthConfig
 
 
 @dataclasses.dataclass
@@ -145,6 +145,7 @@ class TikTokApi:
         suppress_resource_load_types: list[str] = None,
         block_url_patterns: list[str] = None,
         timeout: int = 30000,
+        stealth_config: StealthConfig = None,
     ):
         try:
             """Create a TikTokPlaywrightSession"""
@@ -162,7 +163,7 @@ class TikTokApi:
                 ]
                 await context.add_cookies(formatted_cookies)
             page = await context.new_page()
-            await stealth_async(page)
+            await stealth_async(page, config=stealth_config)
 
             # Get the request headers to the url
             request_headers = None
@@ -270,6 +271,7 @@ class TikTokApi:
         browser: str = "chromium",
         executable_path: str = None,
         timeout: int = 30000,
+        stealth_config: StealthConfig = None,
     ):
         """
         Create sessions for use within the TikTokApi class.
@@ -341,6 +343,7 @@ class TikTokApi:
                     suppress_resource_load_types=suppress_resource_load_types,
                     block_url_patterns=block_url_patterns,
                     timeout=timeout,
+                    stealth_config=stealth_config,
                 )
                 for _ in range(num_sessions)
             ),

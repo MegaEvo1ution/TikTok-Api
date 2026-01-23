@@ -1,1 +1,1 @@
-from .stealth import stealth_async
+from .stealth import stealth_async, StealthConfig
