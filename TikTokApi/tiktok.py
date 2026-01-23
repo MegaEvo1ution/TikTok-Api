@@ -575,7 +575,7 @@ class TikTokApi:
             except json.decoder.JSONDecodeError:
                 if retry_count == retries:
                     self.logger.error(f"Failed to decode json response: {result}")
-                    raise InvalidJSONException()
+                    raise InvalidJSONException(result, "TikTok returned invalid JSON response")
 
                 self.logger.info(
                     f"Failed a request, retrying ({retry_count}/{retries})"
