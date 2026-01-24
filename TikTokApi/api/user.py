@@ -132,7 +132,9 @@ class User:
             )
 
             if resp is None:
-                raise InvalidResponseException(resp, "TikTok returned an invalid response.")
+                raise InvalidResponseException(
+                    resp, "TikTok returned an invalid response."
+                )
 
             for playlist in resp.get("playList", []):
                 yield self.parent.playlist(data=playlist)
