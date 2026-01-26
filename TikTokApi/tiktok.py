@@ -1,44 +1,33 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import dataclasses
-from typing import Any, Awaitable, Callable, Optional
+import json
+import logging
 import random
 import time
-import json
+from typing import Any, Awaitable, Callable, Optional
+from urllib.parse import quote, urlencode, urlparse
 
-from playwright.async_api import (
-    Browser,
-    BrowserContext,
-    Page,
-    Playwright,
-    ProxySettings,
-    async_playwright,
-    TimeoutError,
-    Error as PlaywrightError,
-)
-from urllib.parse import urlencode, quote, urlparse
+from playwright.async_api import Browser, BrowserContext
+from playwright.async_api import Error as PlaywrightError
+from playwright.async_api import (Page, Playwright, ProxySettings,
+                                  TimeoutError, async_playwright)
 from proxyproviders import ProxyProvider
 from proxyproviders.algorithms import Algorithm
 from proxyproviders.models.proxy import ProxyFormat
 
-from .stealth import stealth_async
-from .helpers import random_choice
-
+from .api.comment import Comment
+from .api.hashtag import Hashtag
+from .api.playlist import Playlist
+from .api.search import Search
+from .api.sound import Sound
+from .api.trending import Trending
 from .api.user import User
 from .api.video import Video
-from .api.sound import Sound
-from .api.hashtag import Hashtag
-from .api.comment import Comment
-from .api.trending import Trending
-from .api.search import Search
-from .api.playlist import Playlist
-
-from .exceptions import (
-    InvalidJSONException,
-    EmptyResponseException,
-)
+from .exceptions import EmptyResponseException, InvalidJSONException
+from .helpers import random_choice
+from .stealth import stealth_async
 
 
 @dataclasses.dataclass
@@ -116,6 +105,100 @@ class TikTokApi:
         )
         handler.setFormatter(formatter)
         self.logger.addHandler(handler)
+
+    async def _simulate_human_behavior(self, page):
+        """
+        Simulate realistic human-like behavior on the page.
+
+        This includes natural mouse movements, scrolling, random pauses,
+        and occasional keyboard events. Real users don't instantly navigate
+        to content - they browse, scroll, and interact naturally.
+
+        Args:
+            page: Playwright page object
+        """
+        try:
+            # Wait for the page to be interactive
+            await page.wait_for_load_state("domcontentloaded")
+
+            # Get viewport dimensions for realistic mouse positioning
+            viewport = page.viewport_size or {"width": 1920, "height": 1080}
+            width = viewport["width"]
+            height = viewport["height"]
+
+            # Human-like mouse movement with bezier curves (multiple small movements)
+            # Start from a random position near the top-left (where mouse often starts)
+            current_x = random.randint(50, 200)
+            current_y = random.randint(50, 150)
+            await page.mouse.move(current_x, current_y)
+
+            # Small pause as if user is looking at the page
+            await asyncio.sleep(random.uniform(0.3, 0.8))
+
+            # Simulate reading/scanning the page with natural mouse movements
+            # Users often move mouse while reading
+            num_movements = random.randint(3, 6)
+            for _ in range(num_movements):
+                # Move in a somewhat natural pattern (not perfectly straight)
+                target_x = random.randint(100, width - 100)
+                target_y = random.randint(100, height - 200)
+
+                # Create intermediate points for a curved path
+                steps = random.randint(5, 15)
+                for step in range(steps):
+                    progress = (step + 1) / steps
+                    # Add some curve using easing
+                    eased_progress = progress * progress * (3 - 2 * progress)  # Smooth step
+
+                    # Add slight random deviation for natural movement
+                    deviation_x = random.randint(-20, 20)
+                    deviation_y = random.randint(-10, 10)
+
+                    intermediate_x = int(current_x + (target_x - current_x)
+                                         * eased_progress + deviation_x * (1 - eased_progress))
+                    intermediate_y = int(current_y + (target_y - current_y)
+                                         * eased_progress + deviation_y * (1 - eased_progress))
+
+                    # Clamp to viewport
+                    intermediate_x = max(10, min(width - 10, intermediate_x))
+                    intermediate_y = max(10, min(height - 10, intermediate_y))
+
+                    await page.mouse.move(intermediate_x, intermediate_y)
+                    await asyncio.sleep(random.uniform(0.01, 0.05))
+
+                current_x, current_y = target_x, target_y
+
+                # Occasional pause between movements
+                await asyncio.sleep(random.uniform(0.1, 0.4))
+
+            # Wait for network to settle
+            await page.wait_for_load_state("networkidle")
+
+            # Simulate some scrolling (users often scroll to see content)
+            scroll_amount = random.randint(100, 400)
+            await page.mouse.wheel(0, scroll_amount)
+            await asyncio.sleep(random.uniform(0.3, 0.7))
+
+            # Maybe scroll back up a bit
+            if random.random() > 0.5:
+                await page.mouse.wheel(0, -random.randint(50, 150))
+                await asyncio.sleep(random.uniform(0.2, 0.5))
+
+            # Occasional keyboard events (Tab, Escape - things users might press)
+            if random.random() > 0.7:
+                await page.keyboard.press("Escape")
+                await asyncio.sleep(random.uniform(0.1, 0.3))
+
+            # Final mouse position - somewhere natural on the page
+            final_x = random.randint(200, width - 200)
+            final_y = random.randint(200, 500)
+            await page.mouse.move(final_x, final_y)
+
+            self.logger.debug("Human behavior simulation completed")
+
+        except Exception as e:
+            # Don't fail session creation due to behavior simulation errors
+            self.logger.debug(f"Human behavior simulation error (non-fatal): {e}")
 
     def __del__(self):
         """
@@ -215,13 +298,30 @@ class TikTokApi:
         # Attempt graceful cleanup
         try:
             if session.page:
+                # Get the actual context from the page before closing
+                # This is important when browser_context_factory is used,
+                # as session.context might be the Browser object itself
+                actual_context = session.page.context
                 await session.page.close()
+
+                # Close the actual context (not session.context which might be Browser)
+                # IMPORTANT: Don't close session.context if it's the same as self.browser
+                # as that would kill ALL sessions!
+                if actual_context and actual_context != self.browser:
+                    try:
+                        await actual_context.close()
+                    except Exception as e:
+                        self.logger.debug(f"Error closing actual context: {e}")
         except Exception as e:
             self.logger.debug(f"Error closing page during invalidation: {e}")
 
+        # Only close session.context if it's a real BrowserContext (has 'pages' attribute)
+        # and is different from what we already closed
         try:
-            if session.context:
-                await session.context.close()
+            if session.context and session.context != self.browser:
+                # Check if it's a BrowserContext (has 'pages') not a Browser
+                if hasattr(session.context, 'pages') and not hasattr(session.context, 'contexts'):
+                    await session.context.close()
         except Exception as e:
             self.logger.debug(f"Error closing context during invalidation: {e}")
 
@@ -339,16 +439,26 @@ class TikTokApi:
                 context = self.browser
             else:
                 context = await self.browser.new_context(proxy=proxy, **context_options)
+
+            # Format cookies for adding later
+            formatted_cookies = None
             if cookies is not None:
                 formatted_cookies = [
                     {"name": k, "value": v, "domain": urlparse(url).netloc, "path": "/"}
                     for k, v in cookies.items()
                     if v is not None
                 ]
-                await context.add_cookies(formatted_cookies)
+                # Only add cookies directly if context is a BrowserContext (has add_cookies)
+                # When browser_context_factory is used, context might be a Browser
+                if hasattr(context, 'add_cookies'):
+                    await context.add_cookies(formatted_cookies)
 
             if page_factory:
                 page = await page_factory(context)
+                # If cookies weren't added to context (because it was a Browser),
+                # add them to the page's actual context now
+                if formatted_cookies and not hasattr(context, 'add_cookies'):
+                    await page.context.add_cookies(formatted_cookies)
             else:
                 page = await context.new_page()
                 await stealth_async(page)
@@ -379,13 +489,9 @@ class TikTokApi:
             # Set the navigation timeout
             page.set_default_navigation_timeout(timeout)
 
-            # by doing this, we are simulate scroll event using mouse to `avoid` bot detection
-            x, y = random.randint(0, 50), random.randint(0, 50)
-            a, b = random.randint(1, 50), random.randint(100, 200)
-
-            await page.mouse.move(x, y)
-            await page.wait_for_load_state("networkidle")
-            await page.mouse.move(a, b)
+            # Simulate realistic human-like mouse movements and interactions
+            # to avoid bot detection. Real users don't just instantly navigate.
+            await self._simulate_human_behavior(page)
 
             session = TikTokPlaywrightSession(
                 context,
@@ -617,16 +723,36 @@ class TikTokApi:
         """
         self.logger.debug(f"Closing {len(self.sessions)} sessions...")
 
+        # Track closed contexts to avoid double-closing
+        closed_contexts = set()
+
         for session in self.sessions:
             try:
                 if session.page:
+                    # Get actual context from page before closing
+                    actual_context = session.page.context
                     await session.page.close()
+
+                    # Close the actual context if we haven't already
+                    # and if it's not the browser object
+                    if actual_context and id(actual_context) not in closed_contexts:
+                        if actual_context != self.browser:
+                            try:
+                                await actual_context.close()
+                                closed_contexts.add(id(actual_context))
+                            except Exception as e:
+                                self.logger.debug(f"Error closing actual context: {e}")
             except Exception as e:
                 self.logger.debug(f"Error closing page: {e}")
 
+            # Only close session.context if it's different from browser and not already closed
             try:
-                if session.context:
-                    await session.context.close()
+                if session.context and session.context != self.browser:
+                    if id(session.context) not in closed_contexts:
+                        # Check it's a BrowserContext (has 'pages') not a Browser (has 'contexts')
+                        if hasattr(session.context, 'pages') and not hasattr(session.context, 'contexts'):
+                            await session.context.close()
+                            closed_contexts.add(id(session.context))
             except Exception as e:
                 self.logger.debug(f"Error closing context: {e}")
 
@@ -865,6 +991,11 @@ class TikTokApi:
         encoded_params = f"{url}?{urlencode(params, safe='=', quote_via=quote)}"
         signed_url = await self.sign_url(encoded_params, session_index=i)
 
+        # Add a small random delay before making the request to appear more human-like
+        # Bots often make requests in rapid succession, while humans have natural delays
+        pre_request_delay = random.uniform(0.1, 0.5)
+        await asyncio.sleep(pre_request_delay)
+
         retry_count = 0
         while retry_count < retries:
             retry_count += 1
@@ -897,10 +1028,12 @@ class TikTokApi:
                     self.logger.info(
                         f"Failed a request, retrying ({retry_count}/{retries})"
                     )
+                    # Add random jitter to retry delays to appear more human-like
+                    jitter = random.uniform(0.1, 0.5)
                     if exponential_backoff:
-                        await asyncio.sleep(2**retry_count)
+                        await asyncio.sleep(2**retry_count + jitter)
                     else:
-                        await asyncio.sleep(1)
+                        await asyncio.sleep(1 + jitter)
             except PlaywrightError as e:
                 # Session died during request
                 self.logger.error(f"Playwright error during request: {e}")

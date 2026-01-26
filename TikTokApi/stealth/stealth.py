@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 import json
 from dataclasses import dataclass
-from typing import Tuple, Optional, Dict
+from typing import Dict, Optional, Tuple
 
 from playwright.async_api import Page as AsyncPage
 
+from .js.audio_context import audio_context
+from .js.canvas_fingerprint import canvas_fingerprint
 from .js.chrome_app import chrome_app
 from .js.chrome_csi import chrome_csi
 from .js.chrome_hairline import chrome_hairline
@@ -13,6 +15,7 @@ from .js.chrome_runtime import chrome_runtime
 from .js.generate_magic_arrays import generate_magic_arrays
 from .js.iframe_contentWindow import iframe_contentWindow
 from .js.media_codecs import media_codecs
+from .js.navigator_device_memory import navigator_device_memory
 from .js.navigator_hardwareConcurrency import navigator_hardwareConcurrency
 from .js.navigator_languages import navigator_languages
 from .js.navigator_permissions import navigator_permissions
@@ -20,11 +23,14 @@ from .js.navigator_platform import navigator_platform
 from .js.navigator_plugins import navigator_plugins
 from .js.navigator_userAgent import navigator_userAgent
 from .js.navigator_vendor import navigator_vendor
-from .js.webgl_vendor import webgl_vendor
-from .js.window_outerdimensions import window_outerdimensions
 from .js.utils import utils
+from .js.webgl_vendor import webgl_vendor
+from .js.webrtc_leak import webrtc_leak
+from .js.window_outerdimensions import window_outerdimensions
 
 SCRIPTS: Dict[str, str] = {
+    "audio_context": audio_context,
+    "canvas_fingerprint": canvas_fingerprint,
     "chrome_csi": chrome_csi,
     "chrome_app": chrome_app,
     "chrome_runtime": chrome_runtime,
@@ -44,6 +50,8 @@ SCRIPTS: Dict[str, str] = {
     "utils": utils,
     "webdriver": "delete Object.getPrototypeOf(navigator).webdriver",
     "webgl_vendor": webgl_vendor,
+    "webrtc_leak": webrtc_leak,
+    "navigator_device_memory": navigator_device_memory,
 }
 
 
@@ -84,6 +92,10 @@ class StealthConfig:
     navigator_vendor: bool = False
     outerdimensions: bool = True
     hairline: bool = True
+    webrtc_leak_prevention: bool = True  # Prevent WebRTC from leaking real IP addresses
+    canvas_fingerprint: bool = True  # Randomize canvas fingerprint to prevent tracking
+    audio_context: bool = True  # Add noise to AudioContext to prevent audio fingerprinting
+    navigator_device_memory: bool = True  # Spoof deviceMemory, connection, battery APIs
 
     # options
     vendor: str = "Intel Inc."
@@ -145,6 +157,14 @@ class StealthConfig:
             yield SCRIPTS["outerdimensions"]
         if self.webgl_vendor:
             yield SCRIPTS["webgl_vendor"]
+        if self.webrtc_leak_prevention:
+            yield SCRIPTS["webrtc_leak"]
+        if self.canvas_fingerprint:
+            yield SCRIPTS["canvas_fingerprint"]
+        if self.audio_context:
+            yield SCRIPTS["audio_context"]
+        if self.navigator_device_memory:
+            yield SCRIPTS["navigator_device_memory"]
 
 
 async def stealth_async(page: AsyncPage, config: StealthConfig = None):

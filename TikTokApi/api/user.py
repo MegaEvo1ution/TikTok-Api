@@ -313,10 +313,17 @@ class User:
         keys = data.keys()
 
         if "userInfo" in keys:
+            user_data = data["userInfo"].get("user", {})
+            # Check if user data is empty (TikTok returns empty user for invalid/banned accounts)
+            if not user_data or "id" not in user_data:
+                raise InvalidResponseException(
+                    data,
+                    "TikTok returned empty user data. The user may not exist, be banned, or the request was blocked."
+                )
             self.__update_id_sec_uid_username(
-                data["userInfo"]["user"]["id"],
-                data["userInfo"]["user"]["secUid"],
-                data["userInfo"]["user"]["uniqueId"],
+                user_data["id"],
+                user_data["secUid"],
+                user_data["uniqueId"],
             )
         else:
             self.__update_id_sec_uid_username(
@@ -341,7 +348,5 @@ class User:
     def __str__(self):
         username = getattr(self, "username", None)
         user_id = getattr(self, "user_id", None)
-        sec_uid = getattr(self, "sec_uid", None)
-        return f"TikTokApi.user(username='{username}', user_id='{user_id}', sec_uid='{sec_uid}')"
         sec_uid = getattr(self, "sec_uid", None)
         return f"TikTokApi.user(username='{username}', user_id='{user_id}', sec_uid='{sec_uid}')"
